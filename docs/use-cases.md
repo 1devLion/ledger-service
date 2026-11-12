@@ -11,11 +11,13 @@
   - [CU-02: Open account](#cu-02-open-account)
   - [CU-03: Log in](#cu-03-log-in)
   - [CU-04: Receive external deposit](#cu-04-receive-external-deposit)
-  - [CU-05: Check balance (in progress)](#cu-05-check-balance-in-progress)
-  - [CU-06: Check recipient (in progress)](#cu-06-check-recipient-in-progress)
-  - [CU-07: Transfer (in progress)](#cu-07-transfer-in-progress)
-  - [CU-08: History (in progress)](#cu-08-history-in-progress)
-  - [CU-09: Transfer details (in progress)](#cu-09-transfer-details-in-progress)
+  - [CU-05: Check balance](#cu-05-check-balance)
+  - [CU-06: Look up recipient](#cu-06-look-up-recipient)
+  - [CU-07: Transfer](#cu-07-transfer)
+  - [CU-08: History (in process)](#cu-08-history-in-process)
+  - [CU-09: Transfer detail (in process)](#cu-09-transfer-detail-in-process)
+  - [CU-10: Evaluate control policies (limits and anti-fraud)](#cu-10-evaluate-control-policies-limits-and-anti-fraud)
+  - [CU-11: Review operation (in process)](#cu-11-review-operation-in-process)
 
 ## Glossary
 
@@ -206,12 +208,198 @@
 
 ---
 
-## CU-05: Check balance (in progress)
+## CU-05: Check balance
 
-## CU-06: Check recipient (in progress)
+- **Primary actor:** authenticated user.
+- **Objective:** allow the user to check the balance of their account.
+- **Trigger:** the user sends `GET /balance` with the authentication token and, optionally, the currency as a parameter `(?currency=ARS)`.
 
-## CU-07: Transfer (in progress)
+**Preconditions**
 
-## CU-08: History (in progress)
+- The user is authenticated.
 
-## CU-09: Transfer details (in progress)
+**Main flow**
+
+1. The system validates that the token is valid.
+2. If a currency was selected, the system validates that it is correct.
+3. The system validates that the user has an account in that currency.
+4. The system returns code 200 with the account balance, the currency, the query date and time (UTC), and the account status.
+
+**Alternative flows**
+
+- **A1. Expired or invalid token (step 1):** returns code 401.
+- **A2. Invalid currency (step 2, only if a currency was selected):** returns code 400.
+- **A3. Non-existent account for that currency (step 3, only if a currency was selected):** returns code 404.
+- **A4. No currency and no accounts (step 3):** returns code 200 with an empty list.
+- **A5. Technical failure mid-process:** the balance is not shown and it returns code 500 with a tracking id.
+
+**Postconditions**
+
+- **Success:** the balance was returned; no data was modified.
+- **Failure:** the balance was not returned; no data was modified.
+
+**Business rules involved**
+
+- The balance reflects only confirmed operations up to the time of the query, excluding those in progress, and it is not served from a stale cache.
+- The owner comes from the token, not from the request. A user can only see their own accounts.
+- The amount is returned with 2 decimals, and balances are not written to the logs.
+- The GET response is always a list of balances, even if it has only one element.
+
+---
+
+## CU-06: Look up recipient
+
+- **Primary actor:** authenticated user.
+- **Objective:** look up basic data of an account holder by alias or account number, to confirm who the money will be sent to.
+- **Trigger:** the user sends `GET /accounts/lookup?identifier={alias_or_accountNumber}`, with their authentication token.
+
+**Preconditions**
+
+- The user is authenticated.
+
+**Main flow**
+
+1. The system validates that the token is valid.
+2. The system validates that the query limit has not been exceeded.
+3. The system validates that the format is valid (account number and alias).
+4. The system validates that the account exists and is not inactive.
+5. The system returns code 200 with first name, last-name initial, alias, and currency.
+
+**Alternative flows**
+
+- **A1. Expired or invalid token (step 1):** returns code 401.
+- **A2. Query limit exceeded (step 2):** returns code 429 and the `Retry-After` header.
+- **A3. Invalid query format (step 3):** returns code 400.
+- **A4. Inactive or nonexistent account (step 4):** returns code 404 with the message `The entered account does not exist`.
+- **A5. Technical failure mid-process:** no data is shown and it returns code 500 with a tracking id.
+
+**Postconditions**
+
+- **Success:** the account holder's data was successfully returned: first name, last name, alias, and currency.
+- **Failure:** no data was returned. No data was modified.
+
+**Business rules involved**
+
+- The account holder's last name is returned abbreviated. Only the initial is shown, e.g., `Salvattore -> S.`. If the last name is compound, only the first initial is shown, e.g., `Di Tella -> D.`
+- The query limit is 10 every 30 minutes per user (with the id from the token) and 20 every 30 minutes per IP. Every query that reaches the lookup counts, whether or not the account exists. It is defined per user. Malformed requests (400) do not add to the counter; blocked requests do not extend the block.
+- If the account holder has multiple first names, only the first one is shown.
+- The account number must have 22 numeric digits; the alias must be 3 words of 6 to 20 characters.
+- The alias is normalized before performing the lookup (without spaces and in lowercase).
+- Internal id, email, or personal data are never returned.
+- Looking up by account number also returns the alias, and vice versa.
+- Lookups are logged with a tracking id, without storing personal data, to detect abuse patterns.
+- If the identifier belongs to the user's own account, it is returned the same way.
+
+---
+
+## CU-07: Transfer
+
+- **Primary actor:** authenticated user.
+- **Objective:** move money from their account to another user's account.
+- **Trigger:** the user sends `POST /transfers` with their authentication token, the alias or account number of the destination account holder, Operation ID (used as the idempotency key), currency, amount, and description.
+
+**Preconditions**
+
+- The user is authenticated.
+
+**Main flow**
+
+1. The system validates that the token is valid.
+2. The system validates the request format (required fields, amount greater than 0 with at most 2 decimals).
+3. The system validates that the idempotency key has not been used before.
+4. The system validates the existence and status of the origin and destination accounts.
+5. The system validates that the origin account is different from the destination account.
+6. The system validates that the origin and destination accounts match in currency.
+7. The system starts the transaction and locks both accounts, always in the same order (by id) to avoid cross locks.
+8. The system evaluates the operation with the control policies (see CU-10) and obtains the decision: approved or under review.
+9. The system verifies that the origin account balance covers the amount.
+10. The system records a debit in the origin account and a credit in the destination account (two ledger entries that sum to zero).
+11. The system updates both balances.
+12. The system saves the transfer with COMPLETED status, together with the idempotency key and the result.
+13. The system commits the transaction.
+14. The system returns code 201 with the receipt, id, amount, currency, status, origin (first name and last name), destination (first name and last-name initial), date, and description.
+
+**Alternative flows**
+
+- **A1. Invalid or expired token (step 1):** returns code 401.
+- **A2. Invalid request format (step 2):** returns code 400 with the field detail.
+- **A3. Key already used, same content (step 3):** the transfer is not performed again; returns code 200 with the original receipt or 202 with `UNDER REVIEW` status if applicable.
+- **A4. Key already used, different content (step 3):** responds 409 due to idempotency conflict.
+- **A5. Nonexistent or inactive account (step 4):** returns code 422.
+- **A6. Origin account equal to destination account (step 5):** returns code 400.
+- **A7. Invalid currency (step 6):** the system does not perform the transaction and returns code 422.
+- **A8. Operation under review (step 8):** the control policy leaves the operation in `UNDER REVIEW` status (see CU-10). The system saves the transfer as `UNDER REVIEW`, without debit or credit and associated with the idempotency key, commits that transaction, and returns the code defined by CU-10 for the review reason.
+- **A9. Insufficient balance (step 9):** the transaction is rolled back and it returns code 422. No ledger entries are written.
+- **A10. Simultaneous request with the same key:** only one is processed; the other receives the result of the first.
+- **A11. Technical failure mid-process:** everything is rolled back, nothing remains half-done, and it responds 500 with a tracking id, without exposing internal details.
+
+**Postconditions**
+
+- **Success:** balances changed by the exact amount, two new ledger entries exist, the transfer is saved as COMPLETED, and the idempotency key is associated with its result. The event is recorded to publish to Kafka.
+- **Pending review:** the transfer is saved as `UNDER REVIEW`, without debit/credit, and associated with the idempotency key. See CU-10 and CU-11.
+- **Failure:** nothing changed in balances, ledger entries, or transfers.
+
+**Business rules involved:**
+
+- The amount must be in `BigDecimal`, greater than 0, with at most 2 decimals; if there are more than 2 decimals, it is rejected.
+- The description is an optional field and can have a maximum of 200 characters.
+- Ledger entries are immutable.
+- Operations where the destination is the same as the origin account are not allowed.
+- When simultaneous requests exist, only the first to arrive is processed; the rest receive the result of the first. This is guaranteed by a `UNIQUE` constraint in the database.
+- The origin account cannot transfer an amount greater than the available balance it has.
+- Transfers between accounts with different currencies are not allowed.
+- Limit, anti-fraud, and review rules are not defined here: they are in CU-10. This use case only executes the evaluation and acts according to its decision.
+
+---
+
+## CU-08: History (in process)
+
+---
+
+## CU-09: Transfer detail (in process)
+
+---
+
+## CU-10: Evaluate control policies (limits and anti-fraud)
+
+- **Primary actor:** system (runs inside CU-07).
+- **Objective:** decide whether an operation is approved or remains under review, according to limits and anti-fraud.
+- **Trigger:** CU-07 invokes the evaluation with the origin account, destination account, amount, and currency of the operation.
+
+**Preconditions**
+
+- The origin account is locked within an ongoing transaction (so that totals are consistent).
+
+**Main flow**
+
+1. The system validates that the user's operations are not suspicious (anti-fraud).
+2. The system validates that total daily operations do not exceed the $50,000,000 ARS daily restriction.
+3. The system validates that the individual operation does not exceed the allowed $2,500,000 ARS.
+4. The system returns the decision to CU-07: approved.
+
+**Alternative flows**
+
+- **A1. Block due to suspicious operations (step 1):** if the system detects a possible fraud attempt, CU-07 returns code 400 and the account and transfer status is set to `UNDER REVIEW`.
+- **A2. Operations exceed the allowed total daily maximum amount (step 2):** the system leaves the transaction in `UNDER REVIEW` status and CU-07 returns code 202.
+- **A3. Individual operation exceeds the allowed individual maximum amount (step 3):** the system leaves the transaction in `UNDER REVIEW` status and CU-07 returns code 202.
+
+**Postconditions**
+
+- **Approved:** no data is modified; CU-07 continues with the balance verification.
+- **Under review:** the operation and/or account enter `UNDER REVIEW` status, without debit/credit. All future debit/credit actions enter `UNDER REVIEW` status. An auditor later decides on the account and pending operations awaiting approval (see CU-11).
+
+**Business rules involved:**
+
+- If a transaction remains in `UNDER REVIEW` status and the account is not in `UNDER REVIEW` status, the user can continue operating, but that transaction counts toward the daily total. It is approved if the total excluding that transaction does not exceed the limit, or the auditor can authorize the excess.
+- If a transfer is in `UNDER REVIEW` status, the total amount of that transfer, whether debit or credit, is held and will not be reflected in the origin account or the destination account.
+- There is an anti-fraud system that detects suspicious operation patterns and blocks transactions indefinitely. Suspicion may arise from, e.g., several transfers to the same destination account in a short time; an unusual amount for the user's account; etc. The account enters `UNDER REVIEW` status, suspicious and future operations are recorded and left in `UNDER REVIEW` status, and an auditor must review the account and may decide whether it is suspended, escalated to financial authorities, or becomes `ACTIVE`.
+- If the anti-fraud system pauses an account, until the account becomes `ACTIVE`, no operation can change status.
+- If an individual operation exceeds $2,500,000 ARS, it enters `UNDER REVIEW` status for an auditor to review.
+- If the total amount of daily operations from the origin account exceeds the allowed maximum ($50,000,000 ARS), this transaction enters `UNDER REVIEW` status, where an auditor must decide whether to approve this transfer or report it to the financial authorities to obtain a response before proceeding with it. "Daily" is taken as the last 24 hours.
+- If the operation exceeds the individual operation amount of $2,500,000 and the total daily amount of $50,000,000, only the total daily amount flow is followed.
+
+---
+
+## CU-11: Review operation (in process)
+
+---
