@@ -2,15 +2,13 @@
 
 [English](README.md) | [Español](README.es.md)
 
-> Digital wallet backend in Java and Spring Boot: multi-currency accounts, double-entry ledger, idempotent transfers and external deposits.
+> Digital wallet backend in Java and Spring Boot: multi-currency accounts, double-entry ledger, idempotent transfers, external deposits and maybe more.
 
-**Status:** work in progress. Design phase: use cases are being written and the data model is next. Nothing below is implemented yet unless it is checked in the roadmap.
+**Status:** work in progress. Design phase: I'm writing the use cases and the data model comes next. Nothing below is implemented yet, except what is checked in the roadmap.
 
 ## What it is
 
-A backend that behaves like a bank account service. Users register, open accounts in ARS or USD, and move money between accounts. Money also arrives from outside through authenticated external providers (a bank or a cash-payment network, for example).
-
-The hard part is not the account, it is guaranteeing that money is **never lost or duplicated**, even with retries, crashes or concurrent requests.
+It's a backend that behaves like a bank account service. Users register, open accounts in ARS or USD, and move money between accounts. Money also arrives from outside through authenticated external providers (for example, a bank or a cash-payment network).
 
 ## Scope of v1
 
@@ -20,7 +18,7 @@ The hard part is not the account, it is guaranteeing that money is **never lost 
 - Transfer money between accounts by alias or account number.
 - Check balance, transaction history and transfer details.
 
-**Out of scope for v1:** currency conversion, fees, scheduled transfers, real bank integrations, identity verification (KYC) and dispute reversals.
+**Not included in v1:** currency conversion, fees, scheduled transfers, real bank integrations, identity verification (KYC), anti-fraud systems, manual review and dispute reversals.
 
 ## Key design decisions
 
@@ -39,12 +37,14 @@ Java 21, Spring Boot, PostgreSQL, Flyway, Testcontainers, Docker Compose, GitHub
 
 ## Documentation
 
-- [Use cases](docs/casos-de-uso.md) (Spanish; English version coming soon)
+- [Use cases](docs/use-cases.md) | [Casos de uso](docs/casos-de-uso.md)
 
 ## Roadmap
 
 - [x] Use cases CU-01 to CU-04
-- [ ] Use cases CU-05 to CU-09
+- [x] Use cases CU-05 to CU-07
+- [x] Use case CU-10
+- [ ] Use cases CU-08, CU-09, CU-11
 - [ ] Data model
 - [ ] Project bootstrap (Spring Boot, PostgreSQL, Flyway, Testcontainers)
 - [ ] Users and authentication
